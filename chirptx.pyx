@@ -1,18 +1,20 @@
+# cython: boundscheck=False
+# cython: nonecheck=False
+# cython: cdivision=True
+# cython: wraparound=False
 import pandas
 import numpy
 cimport numpy
 
 
-# Durations are specified in seconds
-DEF TIME_STEP = 0.01
-DEF TX_DURATION = 0.04
-
 cdef class Chirp:
+    cdef double transmission_duration
     cdef bint is_transmitting
     cdef double transmission_began_at
     cdef bint transmission_failed
 
-    def __init__(self):
+    def __init__(self, double transmission_duration):
+        self.transmission_duration = transmission_duration
         self.is_transmitting = False
         self.transmission_began_at = 0
         self.transmission_failed = False
@@ -23,7 +25,7 @@ cdef class Chirp:
     cdef bint update(self, double t):
         """Returns true if transmission began."""
         if self.is_transmitting:
-            if t - self.transmission_began_at > TX_DURATION:
+            if t - self.transmission_began_at > self.transmission_duration:
                 self.is_transmitting = False
         else:
             if self.should_begin_transmission(t):
@@ -34,41 +36,28 @@ cdef class Chirp:
         return False
 
     cdef bint fail(self):
-        """Returns true if transmission failed."""
-        cdef bint already_failed = self.transmission_failed
-        self.transmission_failed = True
-        return not already_failed
-
-cdef class Periodic(Chirp):
-    cdef double period
-    cdef double last_transmission
-
-    def __init__(self, double period):
-        super().__init__()
-        self.period = period
-        self.last_transmission = -int(numpy.random.rand() * period)
-
-    cdef bint should_begin_transmission(self, double t):
-        if self.last_transmission + self.period < t:
-            self.last_transmission = t
+        """Returns true if transmission has failed."""
+        if self.is_transmitting and not self.transmission_failed:
+            self.transmission_failed = True
             return True
         else:
             return False
 
-cdef class RandomizedPeriodic(Chirp):
+
+cdef class Periodic(Chirp):
     cdef double period
-    cdef double spread
     cdef double next_transmission
 
-    def __init__(self, double period, double spread):
-        super().__init__()
+    def __init__(self, double transmission_duration, double period):
+        super().__init__(transmission_duration)
         self.period = period
-        self.spread = spread
         self.schedule(0)
 
+    cdef double sleep_time(self):
+        return self.period
+
     cdef void schedule(self, double t):
-        cdef double this_period = self.period - self.spread / 2 + numpy.random.rand() * self.spread
-        self.next_transmission = t + this_period
+        self.next_transmission = t + self.sleep_time()
 
     cdef bint should_begin_transmission(self, double t):
         if self.next_transmission <= t:
@@ -77,13 +66,29 @@ cdef class RandomizedPeriodic(Chirp):
         else:
             return False
 
+
+cdef class UniformSpread(Periodic):
+    cdef double spread
+
+    def __init__(self, double transmission_duration, double mean_period, double spread):
+        self.spread = spread
+        super().__init__(transmission_duration, mean_period)
+
+    cdef double sleep_time(self):
+        return self.period - self.spread / 2 + numpy.random.rand() * self.spread
+
+cdef class Poisson(Periodic):
+    cdef double sleep_time(self):
+        return numpy.random.exponential(self.period)
+
+
 class Result:
     pass
 
 
-cpdef simulate(numpy.ndarray actors, numpy.ndarray[double] delays, double duration):
+cpdef simulate(double duration, double time_step, numpy.ndarray actors, numpy.ndarray[double] delays):
     cdef numpy.ndarray[double] ts = \
-        numpy.arange(0, duration, TIME_STEP, dtype=numpy.float)
+        numpy.arange(0, duration, time_step, dtype=numpy.float)
     #cdef numpy.ndarray[long] history = \
     #    numpy.zeros(len(ts), dtype=numpy.int)
     cdef int transmissions = 0
